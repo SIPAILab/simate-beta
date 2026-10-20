@@ -1,0 +1,428 @@
+experiment:
+  name: simate-beta-mem20-ae-80k
+  work_dir: ${oc.env:SIPAI_OUTPUT_ROOT,./outputs}
+  seed: 0
+  wandb:
+    enabled: false
+    project: simate-beta
+    mode: online
+model:
+  type: ComposableVLAFramework
+  backbone:
+    type: SimateBetaPrefixBackbone
+    vision_variant: siglip_so400m_patch14_224
+    transformer_variant: gemma_2b
+    input_cameras:
+    - primary
+    - left_wrist
+    - right_wrist
+    history_camera: primary
+    history_frames: 25
+    history_pool_size: 4
+    image_augmentation_mode: robodojo_memory
+    discrete_state_input: true
+    tokenizer_model_path: ${oc.env:SIMATE_TOKENIZER,./pretrained/tokenizer.model}
+    max_token_len: 200
+    dtype: float32
+    gradient_checkpointing: true
+    history_compression: ae
+    history_compressor_hidden_dim: 512
+  action_head:
+    type: SimateBetaFlowMatchingActionHead
+    transformer_variant: gemma_300m
+    action_dim: 32
+    action_horizon: 50
+    num_inference_steps: 10
+    action_normalization: null
+    action_loss_weight:
+      enabled: true
+      key: action_value_weight
+      default: 1.0
+      normalize: none
+      clip:
+      - 0.0
+      - 1.3
+    dtype: float32
+    gradient_checkpointing: true
+    counterfactual_pair_flow:
+      enabled: true
+      pair_id_key: counterfactual_action_pair_id
+      training_mode: common_rollout_solver_grid
+      common_loss_weight: 0.5
+      rollout_loss_weight: 0.5
+data:
+  train:
+    type: CanonicalEmbodiedDataset
+    root: ${oc.env:SIMATE_DATA_ROOT,./data}
+    sources:
+    - name: robodojo_all
+      root: ${oc.env:SIMATE_ROBODOJO_ROOT,./data/robodojo}
+      format: simate_unified
+      split: train
+      ratio: 5
+    - name: make_kong
+      root: ${oc.env:SIMATE_ROBODOJO_ROOT,./data/robodojo}
+      format: simate_unified
+      split: train
+      ratio: 0.7
+    - name: play_tic_tac_toe
+      root: ${oc.env:SIMATE_PLAY_TIC_TAC_TOE_ROOT,./data/play_tic_tac_toe}
+      format: simate_unified
+      split: train
+      ratio: 1
+    reader: simate_unified
+    manifest_split: train
+    manifest:
+      type: simate_unified
+      cache_path: ${oc.env:SIMATE_MANIFEST,./data/manifest.json}
+      cache_policy: readonly
+    reader_options:
+      read_mode: offset
+      video_mode: offset_memfd_opencv
+      offset_memfd_chunk_bytes: 33554432
+      video_tmp_required_free_bytes: 0
+      shard_fd_cache_size: 4
+      member_index_cache_size: 16
+      cache_miss_policy: error
+      max_cached_tables: 128
+      max_cached_videos: 2
+      max_cached_video_bytes_per_worker: 268435456
+      video_decoder: opencv
+      max_cached_video_readers: 4
+      max_cached_state_rows: 8192
+      max_cached_step_rows: 8192
+      max_cached_frames: 256
+      max_cached_frame_bytes: 268435456
+    pipeline:
+      language_source: task
+      camera_window_frame_offsets:
+      - 0
+      camera_history_name: primary
+      camera_history_frame_offsets:
+      - -500
+      - -480
+      - -460
+      - -440
+      - -420
+      - -400
+      - -380
+      - -360
+      - -340
+      - -320
+      - -300
+      - -280
+      - -260
+      - -240
+      - -220
+      - -200
+      - -180
+      - -160
+      - -140
+      - -120
+      - -100
+      - -80
+      - -60
+      - -40
+      - -20
+      strict: true
+      state_action_statistics: ${oc.env:SIMATE_STATISTICS,./data/dataset_statistics.json}
+      state_action_statistics_generation:
+        quantile_estimator: histogram_two_pass
+        quantile_bins: 5000
+        histogram_count_dtype: uint64
+        accumulator_dtype: float64
+        batch_size: 256
+        num_workers: 16
+        prefetch_factor: 2
+        persistent_workers: true
+      state:
+        representation: absolute
+        fields:
+        - name: left.joints
+          source: state.values
+          kind: joint
+          select:
+            start: 0
+            stop: 6
+          metadata:
+            shape:
+            - 14
+            unit: radian
+            joint_type: revolute
+        - name: left.gripper
+          source: state.values
+          kind: gripper
+          select:
+            start: 6
+            stop: 7
+          metadata:
+            shape:
+            - 14
+            unit: open_fraction
+        - name: right.joints
+          source: state.values
+          kind: joint
+          select:
+            start: 7
+            stop: 13
+          metadata:
+            shape:
+            - 14
+            unit: radian
+            joint_type: revolute
+        - name: right.gripper
+          source: state.values
+          kind: gripper
+          select:
+            start: 13
+            stop: 14
+          metadata:
+            shape:
+            - 14
+            unit: open_fraction
+        normalization:
+          mode: q01_q99
+      action_supervision:
+        gripper:
+          enabled: true
+          type: phase_aware_hold_offset
+          phase_index: ${oc.env:SIMATE_PHASE_INDEX,./data/gripper_phase}
+          fields:
+          - left.gripper
+          - right.gripper
+          hold_offset: 0.08
+        statistics_phase_rebind:
+          from_phase_fingerprint: ${oc.env:SIMATE_STATS_SOURCE_PHASE,???}
+          to_phase_fingerprint: ${oc.env:SIMATE_STATS_TARGET_PHASE,???}
+        target_overrides:
+          path: ${oc.env:SIMATE_TARGET_OVERRIDES,./data/target_overrides.json}
+          normalization: frozen_base
+        source_overrides: null
+      counterfactual_action_supervision:
+        enabled: true
+        tasks:
+        - conveyor
+        history_camera: primary
+        supervised_action_steps: 10
+      action:
+        source: state_derivation
+        representation: relative
+        pose_delta_axes: parent
+        target_start_offset: 1
+        target_step_interval: 1
+        tail_padding: repeat_last
+        fields:
+        - name: left.joints
+          source: state.values
+          kind: joint
+          select:
+            start: 0
+            stop: 6
+          metadata:
+            shape:
+            - 14
+            unit: radian
+            joint_type: revolute
+            difference: linear
+        - name: left.gripper
+          source: state.values
+          kind: gripper
+          select:
+            start: 6
+            stop: 7
+          metadata:
+            shape:
+            - 14
+            unit: open_fraction
+        - name: right.joints
+          source: state.values
+          kind: joint
+          select:
+            start: 7
+            stop: 13
+          metadata:
+            shape:
+            - 14
+            unit: radian
+            joint_type: revolute
+            difference: linear
+        - name: right.gripper
+          source: state.values
+          kind: gripper
+          select:
+            start: 13
+            stop: 14
+          metadata:
+            shape:
+            - 14
+            unit: open_fraction
+        normalization:
+          mode: q01_q99
+      episode_filter:
+        rules:
+        - task_instruction_contains:
+          - conveyor
+          required_episode_flag: conveyor_existing_right_only_state_audit
+          episode_audit_path: ${oc.env:SIMATE_CONVEYOR_AUDIT,./data/conveyor_audit.json}
+        exclusions:
+        - source_names:
+          - robodojo_all
+          task_instructions:
+          - Plug the charger into the power strip.
+          expected_episodes: 100
+        - source_names:
+          - robodojo_all
+          task_instructions:
+          - Play tic-tac-toe as the first player and fill the board with the opponent.
+          expected_episodes: 100
+        - source_names:
+          - robodojo_all
+          task_instructions:
+          - Pick up the coin from the holder and insert it precisely into the coin bank.
+          expected_episodes: 100
+      state_recovery_supervision:
+        enabled: true
+        tasks:
+        - conveyor
+        required_episode_flag: conveyor_existing_right_only_state_audit
+        start_step: 0
+        end_step: 251
+        probability: 0.5
+        value_source: state.values
+        value_indices:
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        perturbation_std: 0.02
+        perturbation_clip: 0.06
+        seed: 20260915
+train_dataloader:
+  batch_size: 4
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+  shuffle: true
+  drop_last: true
+  collate_fn:
+    type: CanonicalCollator
+    output_format: canonical
+  sampler:
+    type: MemoryMixtureSampler
+    seed: 0
+    memory_ratio: 0.25
+    epoch_length: auto
+    memory:
+      event_ratio: 0.255
+      guard_ratio: 0.145
+      counterfactual_pair_ratio: 0.4
+      counterfactual_pair_ratio_overrides:
+        press_by_number:
+          memory_decision: 0.8
+      task_target_mix:
+        cover:
+          base: 0.4
+          memory_decision: 0.3
+          completion_guard: 0.3
+        conveyor:
+          base: 0.5
+          memory_decision: 0.5
+          completion_guard: 0.0
+        swap_block:
+          base: 0.5
+          memory_decision: 0.2
+          completion_guard: 0.3
+        press_by_number:
+          base: 0.5
+          memory_decision: 0.4
+          completion_guard: 0.1
+      counterfactual_action_mix:
+        conveyor:
+          decision_positive: 0.25
+          decision_negative: 0.25
+          positive_timing_wait: 0.1
+          negative_distractor_wait: 0.15
+          positive_rollout_approach: 0.083333333333334
+          positive_rollout_closing: 0.083333333333333
+          positive_rollout_secure_lift: 0.083333333333333
+      task_final_mix:
+        sorting: 0.05
+        swap_t: 0.05
+        cover: 0.25
+        conveyor: 0.4
+        press_by_number: 0.05
+        swap_block: 0.2
+      counterfactual_group_ratio: 0.8
+      counterfactual_group_tasks:
+      - cover
+      - press_by_number
+      - conveyor
+      locality_aware: true
+      locality_shuffle_within_episode: true
+      counterfactual_group_ratio_overrides:
+        conveyor: 1.0
+        press_by_number: 1.0
+    mixture:
+      replacement: true
+      active_shards_per_rank: 4
+      block_size: 32
+      shuffle_shards: true
+      shuffle_episodes: true
+      shuffle_blocks: true
+      shuffle_within_block: false
+      phase_repeat:
+        phase_ranges: ${oc.env:SIMATE_PHASE_RANGES,./data/recovery_phase_ranges.json}
+        repeat_factor: 3
+        source_names:
+        - play_tic_tac_toe
+    drop_last: false
+  worker_init:
+    limit_threads: true
+    torch_num_threads: 1
+    opencv_num_threads: 1
+    disable_opencv_opencl: true
+optim_wrapper:
+  optimizer:
+    type: AdamW
+    lr: 1.0e-05
+    weight_decay: 1.0e-10
+    betas:
+    - 0.9
+    - 0.95
+    eps: 1.0e-08
+    foreach: false
+    fused: false
+param_scheduler:
+  type: CosineWithMinLRScheduler
+  min_lr: 1.0e-06
+  num_training_steps: 80000
+train_cfg:
+  max_steps: 80000
+  init_checkpoint:
+    type: SipaiNativeSafetensors
+    path: ${oc.env:SIMATE_INIT_CHECKPOINT,./pretrained/simate-beta-init/model.safetensors}
+  num_warmup_steps: 500
+  max_grad_norm: 1.0
+  ema_decay: 0.99
+  gradient_accumulation_steps: 1
+  save_final_checkpoint: true
+  export_final_checkpoint: true
+  save_interval: 6000
+  save_last: true
+  logging_interval: 20
+  freeze:
+  - backbone.vision_encoder
+  - backbone.history_compressor
+engine:
+  nnodes: 4
+  precision: bf16
+  strategy:
+    preset: fsdp2_hsdp
+    options:
+      wrap_policy: module_classes
+      module_classes:
+      - GemmaDecoderLayer
+      shard_size: 8

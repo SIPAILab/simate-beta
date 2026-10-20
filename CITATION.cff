@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+title: "SiPAI: Vision-Language-Action Training and Deployment Framework"
+message: "If you use this software, please cite it using the metadata from this file."
+type: software
+authors:
+  - name: SiPAI Contributors
+repository-code: "https://github.com/SIPAILab/simate-beta"
+abstract: "A native framework for Vision-Language-Action data conversion, training, evaluation, and deployment."
+keywords:
+  - vision-language-action
+  - robot-learning
+  - simate
+  - training-framework
+license: MIT
+version: 1.0.1
